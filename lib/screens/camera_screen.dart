@@ -614,15 +614,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                           ),
                         ),
                       ),
-                      const SizedBox(width: 6),
-
-                      _buildRotatedButton(
-                        child: IconButton(
-                          icon: const Icon(Icons.tune_rounded, color: Colors.white),
-                          tooltip: "Parameters & Palettes",
-                          onPressed: _showSettingsModal,
-                        ),
-                      ),
+                      const SizedBox(width: 4),
 
                       _buildRotatedButton(
                         child: IconButton(
