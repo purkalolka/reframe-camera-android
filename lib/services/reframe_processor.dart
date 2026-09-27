@@ -103,7 +103,7 @@ class ReframeProcessor {
     [15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0]
   ];
 
-  /// Full dithering pipeline with resolution/density control and settings
+  /// Full dithering pipeline with rotation/orientation support
   static Uint8List processImage(
     Uint8List inputBytes, {
     PalettePreset preset = PalettePreset.spectra6,
@@ -114,6 +114,7 @@ class ReframeProcessor {
     bool useFloydSteinberg = true,
     int densityResolution = 700,
     bool isFrontCamera = false,
+    int rotationDegrees = 0,
   }) {
     img.Image? decoded = img.decodeImage(inputBytes);
     if (decoded == null) {
@@ -122,7 +123,12 @@ class ReframeProcessor {
 
     decoded = img.bakeOrientation(decoded);
 
-    // If photo was taken with front camera, mirror horizontally
+    // Apply device physical capture rotation if needed
+    if (rotationDegrees != 0) {
+      decoded = img.copyRotate(decoded, angle: rotationDegrees);
+    }
+
+    // Front camera mirror
     if (isFrontCamera) {
       decoded = img.flipHorizontal(decoded);
     }

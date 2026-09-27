@@ -24,9 +24,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   bool _isRefreshingEpaper = false;
   FlashMode _flashMode = FlashMode.off;
 
-  // Camera Settings
+  // Settings
   PalettePreset _palettePreset = PalettePreset.spectra6;
-  int _densityResolution = 700; // 400: Lo-Fi/Grainy, 700: Default, 1000: Ultra-Dense
+  int _densityResolution = 700;
   double _saturation = 0.6;
   double _colorBoost = 1.3;
   double _contrast = 1.15;
@@ -135,10 +135,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       useFloydSteinberg: params['floyd'] as bool,
       densityResolution: params['density'] as int,
       isFrontCamera: params['isFrontCamera'] as bool,
+      rotationDegrees: params['rotation'] as int,
     );
   }
 
-  Future<void> _processImageBytes(Uint8List rawBytes, {bool isFront = false}) async {
+  Future<void> _processImageBytes(Uint8List rawBytes, {bool isFront = false, int rotation = 0}) async {
     setState(() {
       _isProcessing = true;
       _rawCapturedBytes = rawBytes;
@@ -155,6 +156,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         'floyd': _useFloydSteinberg,
         'density': _densityResolution,
         'isFrontCamera': isFront,
+        'rotation': rotation,
       });
 
       if (!mounted) return;
@@ -184,9 +186,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     try {
       final bool wasFront = _isCurrentFrontCamera;
+      final orientation = MediaQuery.of(context).orientation;
+
       final XFile photoFile = await _controller!.takePicture();
       final Uint8List bytes = await photoFile.readAsBytes();
-      await _processImageBytes(bytes, isFront: wasFront);
+
+      await _processImageBytes(bytes, isFront: wasFront, rotation: 0);
     } catch (e) {
       debugPrint("Take photo error: $e");
     }
@@ -198,7 +203,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
       if (image != null) {
         final bytes = await image.readAsBytes();
-        await _processImageBytes(bytes, isFront: false);
+        await _processImageBytes(bytes, isFront: false, rotation: 0);
       }
     } catch (e) {
       debugPrint("Gallery pick error: $e");
@@ -401,22 +406,22 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     );
   }
 
-  Widget _buildViewfinder() {
+  Widget _buildViewfinder(Orientation orientation) {
     if (_controller == null || !_controller!.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Colors.white70));
     }
 
-    // Exact sensor aspect ratio calculation to prevent any distortion or stretching
     final sensorRatio = _controller!.value.aspectRatio;
-    // In portrait orientation on Android, the preview aspect ratio is 1 / sensorRatio
-    final previewRatio = 1.0 / sensorRatio;
+    // Calculate aspect ratio dynamically based on current phone orientation
+    final isLandscape = orientation == Orientation.landscape;
+    final previewRatio = isLandscape ? sensorRatio : (1.0 / sensorRatio);
 
     Widget previewWidget = AspectRatio(
       aspectRatio: previewRatio,
       child: CameraPreview(_controller!),
     );
 
-    // Mirror preview if front camera is active
+    // Front camera mirror
     if (_isCurrentFrontCamera) {
       previewWidget = Transform(
         alignment: Alignment.center,
@@ -441,6 +446,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+    final orientation = MediaQuery.of(context).orientation;
+    final isLandscape = orientation == Orientation.landscape;
+
     if (_isRefreshingEpaper && _rawCapturedBytes != null && _ditheredBytes != null) {
       return Scaffold(
         backgroundColor: Colors.black,
@@ -457,8 +465,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: SafeArea(
         child: Stack(
           children: [
-            // Exact aspect ratio Viewfinder
-            _buildViewfinder(),
+            // Responsive Viewfinder adapting to orientation
+            _buildViewfinder(orientation),
 
             // Top control bar
             Positioned(
@@ -468,7 +476,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // App branding & current preset
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
@@ -489,7 +496,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
                   Row(
                     children: [
-                      // Mode switch: Floyd-Steinberg vs Bayer
                       GestureDetector(
                         onTap: () {
                           setState(() {
@@ -526,14 +532,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                       const SizedBox(width: 6),
 
-                      // Settings button
                       IconButton(
                         icon: const Icon(Icons.tune_rounded, color: Colors.white),
                         tooltip: "Parameters & Palettes",
                         onPressed: _showSettingsModal,
                       ),
 
-                      // Flash button
                       IconButton(
                         icon: Icon(
                           _flashMode == FlashMode.off
@@ -544,7 +548,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                         onPressed: _cycleFlash,
                       ),
 
-                      // Flip camera button
                       IconButton(
                         icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
                         onPressed: _switchCamera,
@@ -581,13 +584,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
             // Bottom control bar (reFrame physical shutter button style)
             Positioned(
-              bottom: 24,
+              bottom: isLandscape ? 12 : 24,
               left: 0,
               right: 0,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Pick from phone gallery
                   IconButton(
                     iconSize: 32,
                     icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
@@ -595,12 +597,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     onPressed: _pickFromGallery,
                   ),
 
-                  // Large tactile shutter button
                   GestureDetector(
                     onTap: _takePhoto,
                     child: Container(
-                      width: 80,
-                      height: 80,
+                      width: isLandscape ? 68 : 80,
+                      height: isLandscape ? 68 : 80,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: const Color(0xFFF0EFEB),
@@ -618,8 +619,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                       child: Center(
                         child: Container(
-                          width: 60,
-                          height: 60,
+                          width: isLandscape ? 50 : 60,
+                          height: isLandscape ? 50 : 60,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: const Color(0xFFE5E5DF),
@@ -633,7 +634,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     ),
                   ),
 
-                  // Parameters shortcut button
                   IconButton(
                     iconSize: 30,
                     icon: const Icon(Icons.settings_outlined, color: Colors.white),
