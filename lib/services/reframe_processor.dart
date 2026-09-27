@@ -112,7 +112,8 @@ class ReframeProcessor {
     double colorFactor = 1.3,
     double contrastFactor = 1.1,
     bool useFloydSteinberg = true,
-    int densityResolution = 600, // Resolution density: 400 (Chunky/Grainy), 600 (Balanced), 800 (Fine)
+    int densityResolution = 700,
+    bool isFrontCamera = false,
   }) {
     img.Image? decoded = img.decodeImage(inputBytes);
     if (decoded == null) {
@@ -120,6 +121,11 @@ class ReframeProcessor {
     }
 
     decoded = img.bakeOrientation(decoded);
+
+    // If photo was taken with front camera, mirror horizontally
+    if (isFrontCamera) {
+      decoded = img.flipHorizontal(decoded);
+    }
 
     // Apply density scaling
     img.Image resized;

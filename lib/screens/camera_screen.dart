@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
@@ -36,6 +37,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   String _currentPhotoId = "";
 
   final ImagePicker _picker = ImagePicker();
+
+  bool get _isCurrentFrontCamera {
+    if (widget.cameras.isEmpty || _selectedCameraIndex >= widget.cameras.length) {
+      return false;
+    }
+    return widget.cameras[_selectedCameraIndex].lensDirection == CameraLensDirection.front;
+  }
 
   @override
   void initState() {
@@ -126,10 +134,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       contrastFactor: params['contrast'] as double,
       useFloydSteinberg: params['floyd'] as bool,
       densityResolution: params['density'] as int,
+      isFrontCamera: params['isFrontCamera'] as bool,
     );
   }
 
-  Future<void> _processImageBytes(Uint8List rawBytes) async {
+  Future<void> _processImageBytes(Uint8List rawBytes, {bool isFront = false}) async {
     setState(() {
       _isProcessing = true;
       _rawCapturedBytes = rawBytes;
@@ -145,6 +154,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         'contrast': _contrast,
         'floyd': _useFloydSteinberg,
         'density': _densityResolution,
+        'isFrontCamera': isFront,
       });
 
       if (!mounted) return;
@@ -173,9 +183,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
 
     try {
+      final bool wasFront = _isCurrentFrontCamera;
       final XFile photoFile = await _controller!.takePicture();
       final Uint8List bytes = await photoFile.readAsBytes();
-      await _processImageBytes(bytes);
+      await _processImageBytes(bytes, isFront: wasFront);
     } catch (e) {
       debugPrint("Take photo error: $e");
     }
@@ -187,7 +198,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
       if (image != null) {
         final bytes = await image.readAsBytes();
-        await _processImageBytes(bytes);
+        await _processImageBytes(bytes, isFront: false);
       }
     } catch (e) {
       debugPrint("Gallery pick error: $e");
@@ -390,6 +401,44 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     );
   }
 
+  Widget _buildViewfinder() {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return const Center(child: CircularProgressIndicator(color: Colors.white70));
+    }
+
+    // Exact sensor aspect ratio calculation to prevent any distortion or stretching
+    final sensorRatio = _controller!.value.aspectRatio;
+    // In portrait orientation on Android, the preview aspect ratio is 1 / sensorRatio
+    final previewRatio = 1.0 / sensorRatio;
+
+    Widget previewWidget = AspectRatio(
+      aspectRatio: previewRatio,
+      child: CameraPreview(_controller!),
+    );
+
+    // Mirror preview if front camera is active
+    if (_isCurrentFrontCamera) {
+      previewWidget = Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.rotationY(math.pi),
+        child: previewWidget,
+      );
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            color: Colors.black,
+            child: previewWidget,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isRefreshingEpaper && _rawCapturedBytes != null && _ditheredBytes != null) {
@@ -408,21 +457,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: SafeArea(
         child: Stack(
           children: [
-            // Viewfinder
-            if (_controller != null && _controller!.value.isInitialized)
-              Center(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: AspectRatio(
-                    aspectRatio: 3.0 / 4.0,
-                    child: CameraPreview(_controller!),
-                  ),
-                ),
-              )
-            else
-              const Center(
-                child: CircularProgressIndicator(color: Colors.white70),
-              ),
+            // Exact aspect ratio Viewfinder
+            _buildViewfinder(),
 
             // Top control bar
             Positioned(
