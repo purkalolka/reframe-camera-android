@@ -79,13 +79,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       if (x.abs() > 4.5 || y.abs() > 4.5) {
         if (x.abs() > y.abs()) {
           if (x > 0) {
-            // Tilted right -> phone held landscape (home button right)
-            newOrientation = DevicePhysicalOrientation.landscapeRight;
-            targetAngle = -math.pi / 2;
-          } else {
-            // Tilted left -> phone held landscape (home button left)
+            // Tilted left (counter-clockwise) -> rotate icons clockwise (+90 deg)
             newOrientation = DevicePhysicalOrientation.landscapeLeft;
             targetAngle = math.pi / 2;
+          } else {
+            // Tilted right (clockwise) -> rotate icons counter-clockwise (-90 deg)
+            newOrientation = DevicePhysicalOrientation.landscapeRight;
+            targetAngle = -math.pi / 2;
           }
         } else {
           if (y > 0) {
@@ -238,9 +238,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   int _calculateCaptureRotation() {
     // Determine exact clockwise rotation in degrees to produce upright photo
     switch (_deviceOrientation) {
-      case DevicePhysicalOrientation.landscapeRight:
-        return 90;
       case DevicePhysicalOrientation.landscapeLeft:
+        return 90;
+      case DevicePhysicalOrientation.landscapeRight:
         return 270;
       case DevicePhysicalOrientation.portraitDown:
         return 180;
