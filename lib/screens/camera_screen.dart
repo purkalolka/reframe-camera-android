@@ -4,9 +4,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import '../services/reframe_processor.dart';
 import '../widgets/epaper_refresh_view.dart';
 import 'photo_result_screen.dart';
+
+enum DevicePhysicalOrientation {
+  portraitUp,
+  landscapeLeft,
+  portraitDown,
+  landscapeRight,
+}
 
 class CameraScreen extends StatefulWidget {
   final List<CameraDescription> cameras;
@@ -38,6 +46,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   final ImagePicker _picker = ImagePicker();
 
+  // Accelerometer orientation tracking
+  StreamSubscription<AccelerometerEvent>? _accelerometerSub;
+  DevicePhysicalOrientation _deviceOrientation = DevicePhysicalOrientation.portraitUp;
+  double _uiRotationAngle = 0.0; // In radians for smooth icon rotation
+
   bool get _isCurrentFrontCamera {
     if (widget.cameras.isEmpty || _selectedCameraIndex >= widget.cameras.length) {
       return false;
@@ -49,9 +62,51 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _initAccelerometer();
     if (widget.cameras.isNotEmpty) {
       _initCamera(_selectedCameraIndex);
     }
+  }
+
+  void _initAccelerometer() {
+    _accelerometerSub = accelerometerEventStream().listen((AccelerometerEvent event) {
+      double x = event.x;
+      double y = event.y;
+
+      DevicePhysicalOrientation newOrientation = _deviceOrientation;
+      double targetAngle = _uiRotationAngle;
+
+      if (x.abs() > 4.5 || y.abs() > 4.5) {
+        if (x.abs() > y.abs()) {
+          if (x > 0) {
+            // Tilted right -> phone held landscape (home button right)
+            newOrientation = DevicePhysicalOrientation.landscapeRight;
+            targetAngle = -math.pi / 2;
+          } else {
+            // Tilted left -> phone held landscape (home button left)
+            newOrientation = DevicePhysicalOrientation.landscapeLeft;
+            targetAngle = math.pi / 2;
+          }
+        } else {
+          if (y > 0) {
+            // Normal upright portrait
+            newOrientation = DevicePhysicalOrientation.portraitUp;
+            targetAngle = 0.0;
+          } else {
+            // Upside down portrait
+            newOrientation = DevicePhysicalOrientation.portraitDown;
+            targetAngle = math.pi;
+          }
+        }
+
+        if (newOrientation != _deviceOrientation && mounted) {
+          setState(() {
+            _deviceOrientation = newOrientation;
+            _uiRotationAngle = targetAngle;
+          });
+        }
+      }
+    });
   }
 
   Future<void> _initCamera(int cameraIndex) async {
@@ -93,6 +148,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _accelerometerSub?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -179,6 +235,21 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  int _calculateCaptureRotation() {
+    // Determine exact clockwise rotation in degrees to produce upright photo
+    switch (_deviceOrientation) {
+      case DevicePhysicalOrientation.landscapeRight:
+        return 90;
+      case DevicePhysicalOrientation.landscapeLeft:
+        return 270;
+      case DevicePhysicalOrientation.portraitDown:
+        return 180;
+      case DevicePhysicalOrientation.portraitUp:
+      default:
+        return 0;
+    }
+  }
+
   Future<void> _takePhoto() async {
     if (_controller == null || !_controller!.value.isInitialized || _isProcessing) {
       return;
@@ -186,12 +257,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     try {
       final bool wasFront = _isCurrentFrontCamera;
-      final orientation = MediaQuery.of(context).orientation;
+      final int rotation = _calculateCaptureRotation();
 
       final XFile photoFile = await _controller!.takePicture();
       final Uint8List bytes = await photoFile.readAsBytes();
 
-      await _processImageBytes(bytes, isFront: wasFront, rotation: 0);
+      await _processImageBytes(bytes, isFront: wasFront, rotation: rotation);
     } catch (e) {
       debugPrint("Take photo error: $e");
     }
@@ -406,22 +477,19 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     );
   }
 
-  Widget _buildViewfinder(Orientation orientation) {
+  Widget _buildViewfinder() {
     if (_controller == null || !_controller!.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Colors.white70));
     }
 
     final sensorRatio = _controller!.value.aspectRatio;
-    // Calculate aspect ratio dynamically based on current phone orientation
-    final isLandscape = orientation == Orientation.landscape;
-    final previewRatio = isLandscape ? sensorRatio : (1.0 / sensorRatio);
+    final previewRatio = 1.0 / sensorRatio;
 
     Widget previewWidget = AspectRatio(
       aspectRatio: previewRatio,
       child: CameraPreview(_controller!),
     );
 
-    // Front camera mirror
     if (_isCurrentFrontCamera) {
       previewWidget = Transform(
         alignment: Alignment.center,
@@ -444,11 +512,24 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     );
   }
 
+  // Helper widget to smoothly rotate icons based on physical phone orientation
+  Widget _buildRotatedButton({required Widget child}) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.0, end: _uiRotationAngle),
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+      builder: (context, angle, childWidget) {
+        return Transform.rotate(
+          angle: angle,
+          child: childWidget,
+        );
+      },
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final orientation = MediaQuery.of(context).orientation;
-    final isLandscape = orientation == Orientation.landscape;
-
     if (_isRefreshingEpaper && _rawCapturedBytes != null && _ditheredBytes != null) {
       return Scaffold(
         backgroundColor: Colors.black,
@@ -465,8 +546,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: SafeArea(
         child: Stack(
           children: [
-            // Responsive Viewfinder adapting to orientation
-            _buildViewfinder(orientation),
+            // Stable vertical Viewfinder (never jarringly jumps on orientation)
+            _buildViewfinder(),
 
             // Top control bar
             Positioned(
@@ -476,81 +557,91 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.6),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: Text(
-                      "reFrame // ${_palettePreset.name.toUpperCase()}",
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
+                  _buildRotatedButton(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.6),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Text(
+                        "reFrame // ${_palettePreset.name.toUpperCase()}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
 
                   Row(
                     children: [
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _useFloydSteinberg = !_useFloydSteinberg;
-                          });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                _useFloydSteinberg
-                                    ? "Algorithm: Floyd-Steinberg"
-                                    : "Algorithm: Bayer 4x4",
+                      _buildRotatedButton(
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _useFloydSteinberg = !_useFloydSteinberg;
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  _useFloydSteinberg
+                                      ? "Algorithm: Floyd-Steinberg"
+                                      : "Algorithm: Bayer 4x4",
+                                ),
+                                duration: const Duration(seconds: 1),
                               ),
-                              duration: const Duration(seconds: 1),
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.6),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white24),
                             ),
-                          );
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.6),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.white24),
-                          ),
-                          child: Text(
-                            _useFloydSteinberg ? "FLOYD" : "BAYER",
-                            style: const TextStyle(
-                              color: Colors.yellowAccent,
-                              fontFamily: 'monospace',
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
+                            child: Text(
+                              _useFloydSteinberg ? "FLOYD" : "BAYER",
+                              style: const TextStyle(
+                                color: Colors.yellowAccent,
+                                fontFamily: 'monospace',
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ),
                       ),
                       const SizedBox(width: 6),
 
-                      IconButton(
-                        icon: const Icon(Icons.tune_rounded, color: Colors.white),
-                        tooltip: "Parameters & Palettes",
-                        onPressed: _showSettingsModal,
-                      ),
-
-                      IconButton(
-                        icon: Icon(
-                          _flashMode == FlashMode.off
-                              ? Icons.flash_off
-                              : (_flashMode == FlashMode.auto ? Icons.flash_auto : Icons.flash_on),
-                          color: Colors.white,
+                      _buildRotatedButton(
+                        child: IconButton(
+                          icon: const Icon(Icons.tune_rounded, color: Colors.white),
+                          tooltip: "Parameters & Palettes",
+                          onPressed: _showSettingsModal,
                         ),
-                        onPressed: _cycleFlash,
                       ),
 
-                      IconButton(
-                        icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
-                        onPressed: _switchCamera,
+                      _buildRotatedButton(
+                        child: IconButton(
+                          icon: Icon(
+                            _flashMode == FlashMode.off
+                                ? Icons.flash_off
+                                : (_flashMode == FlashMode.auto ? Icons.flash_auto : Icons.flash_on),
+                            color: Colors.white,
+                          ),
+                          onPressed: _cycleFlash,
+                        ),
+                      ),
+
+                      _buildRotatedButton(
+                        child: IconButton(
+                          icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
+                          onPressed: _switchCamera,
+                        ),
                       ),
                     ],
                   ),
@@ -582,26 +673,29 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 ),
               ),
 
-            // Bottom control bar (reFrame physical shutter button style)
+            // Bottom control bar
             Positioned(
-              bottom: isLandscape ? 12 : 24,
+              bottom: 24,
               left: 0,
               right: 0,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  IconButton(
-                    iconSize: 32,
-                    icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
-                    tooltip: "Pick from gallery",
-                    onPressed: _pickFromGallery,
+                  _buildRotatedButton(
+                    child: IconButton(
+                      iconSize: 32,
+                      icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
+                      tooltip: "Pick from gallery",
+                      onPressed: _pickFromGallery,
+                    ),
                   ),
 
+                  // Large tactile shutter button
                   GestureDetector(
                     onTap: _takePhoto,
                     child: Container(
-                      width: isLandscape ? 68 : 80,
-                      height: isLandscape ? 68 : 80,
+                      width: 80,
+                      height: 80,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: const Color(0xFFF0EFEB),
@@ -619,8 +713,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                       child: Center(
                         child: Container(
-                          width: isLandscape ? 50 : 60,
-                          height: isLandscape ? 50 : 60,
+                          width: 60,
+                          height: 60,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: const Color(0xFFE5E5DF),
@@ -634,11 +728,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     ),
                   ),
 
-                  IconButton(
-                    iconSize: 30,
-                    icon: const Icon(Icons.settings_outlined, color: Colors.white),
-                    tooltip: "Tune density & colors",
-                    onPressed: _showSettingsModal,
+                  _buildRotatedButton(
+                    child: IconButton(
+                      iconSize: 30,
+                      icon: const Icon(Icons.settings_outlined, color: Colors.white),
+                      tooltip: "Tune density & colors",
+                      onPressed: _showSettingsModal,
+                    ),
                   ),
                 ],
               ),

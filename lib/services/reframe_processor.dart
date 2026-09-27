@@ -103,7 +103,7 @@ class ReframeProcessor {
     [15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0]
   ];
 
-  /// Full dithering pipeline with rotation/orientation support
+  /// Full dithering pipeline with exact physical device rotation support
   static Uint8List processImage(
     Uint8List inputBytes, {
     PalettePreset preset = PalettePreset.spectra6,
@@ -121,19 +121,20 @@ class ReframeProcessor {
       throw Exception("Unable to decode image");
     }
 
+    // Bake original sensor EXIF orientation first
     decoded = img.bakeOrientation(decoded);
 
-    // Apply device physical capture rotation if needed
+    // Apply hardware physical device rotation (0, 90, 180, 270)
     if (rotationDegrees != 0) {
       decoded = img.copyRotate(decoded, angle: rotationDegrees);
     }
 
-    // Front camera mirror
+    // Mirror horizontally for front camera
     if (isFrontCamera) {
       decoded = img.flipHorizontal(decoded);
     }
 
-    // Apply density scaling
+    // Scale maintaining aspect ratio based on density setting
     img.Image resized;
     if (decoded.width >= decoded.height) {
       resized = img.copyResize(decoded, width: densityResolution);
@@ -141,7 +142,7 @@ class ReframeProcessor {
       resized = img.copyResize(decoded, height: densityResolution);
     }
 
-    // Color and contrast adjustments
+    // Preprocessing: Brightness, Saturation, Contrast
     if (brightnessFactor != 1.0) {
       double bOffset = (brightnessFactor - 1.0) * 80;
       resized = img.adjustColor(resized, brightness: bOffset);

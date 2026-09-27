@@ -8,12 +8,9 @@ List<CameraDescription> _cameras = [];
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Allow all orientations so the app can rotate seamlessly
+  // Lock UI strictly to portrait orientation (standard camera behavior)
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
   ]);
   
   SystemChrome.setSystemUIOverlayStyle(
