@@ -2,11 +2,15 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
-/// Exact implementation of the reFrame camera dithering algorithm
-/// matches Python reframe.py (PIL quantization with Spectra 6 blended palette).
+enum PalettePreset {
+  spectra6,     // Authentic reFrame Spectra 6 (6 colors: Blk, Wht, Yel, Red, Blu, Grn)
+  retro3Color,  // Classic e-ink (Black, White, Red)
+  monochrome,   // Pure e-ink 2-color (Black, White)
+  cyberpunk,    // Neon high-contrast palette
+}
+
 class ReframeProcessor {
-  // Desaturated Palette (Pure primaries):
-  // 0: Black, 1: White, 2: Green, 3: Blue, 4: Red, 5: Yellow
+  // Spectra 6 base palettes
   static const List<List<int>> desaturatedPalette = [
     [0, 0, 0],          // 0: Black
     [255, 255, 255],    // 1: White
@@ -16,7 +20,6 @@ class ReframeProcessor {
     [255, 255, 0],      // 5: Yellow
   ];
 
-  // Saturated Palette (E-paper pigments):
   static const List<List<int>> saturatedPalette = [
     [57, 48, 57],       // 0: Muted Black
     [255, 255, 255],    // 1: White
@@ -26,27 +29,49 @@ class ReframeProcessor {
     [208, 190, 71],     // 5: Muted Yellow
   ];
 
-  // reFrame color sequence: [0, 1, 5, 4, 3, 2] -> Black, White, Yellow, Red, Blue, Green
   static const List<int> colorIndices = [0, 1, 5, 4, 3, 2];
 
-  /// Blends the saturated and desaturated palettes exactly like reframe.py:
-  /// rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
-  /// rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
-  static List<List<int>> getBlendedPalette({double saturation = 0.6}) {
-    List<List<int>> palette = [];
-    for (int idx in colorIndices) {
-      final sat = saturatedPalette[idx];
-      final desat = desaturatedPalette[idx];
-      int r = ((sat[0] * saturation) + (desat[0] * (1.0 - saturation))).round().clamp(0, 255);
-      int g = ((sat[1] * saturation) + (desat[1] * (1.0 - saturation))).round().clamp(0, 255);
-      int b = ((sat[2] * saturation) + (desat[2] * (1.0 - saturation))).round().clamp(0, 255);
-      palette.add([r, g, b]);
+  /// Generates target palette based on chosen preset & saturation
+  static List<List<int>> getPalette({
+    PalettePreset preset = PalettePreset.spectra6,
+    double saturation = 0.6,
+  }) {
+    switch (preset) {
+      case PalettePreset.monochrome:
+        return [
+          [0, 0, 0],
+          [255, 255, 255],
+        ];
+      case PalettePreset.retro3Color:
+        return [
+          [25, 25, 25],       // Black
+          [250, 250, 245],   // White
+          [210, 40, 40],     // Red
+        ];
+      case PalettePreset.cyberpunk:
+        return [
+          [15, 15, 25],      // Deep night
+          [255, 255, 255],   // Pure white
+          [255, 0, 110],     // Neon pink
+          [0, 240, 255],     // Neon cyan
+          [255, 225, 0],     // Neon yellow
+          [120, 0, 255],     // Violet
+        ];
+      case PalettePreset.spectra6:
+      default:
+        List<List<int>> palette = [];
+        for (int idx in colorIndices) {
+          final sat = saturatedPalette[idx];
+          final desat = desaturatedPalette[idx];
+          int r = ((sat[0] * saturation) + (desat[0] * (1.0 - saturation))).round().clamp(0, 255);
+          int g = ((sat[1] * saturation) + (desat[1] * (1.0 - saturation))).round().clamp(0, 255);
+          int b = ((sat[2] * saturation) + (desat[2] * (1.0 - saturation))).round().clamp(0, 255);
+          palette.add([r, g, b]);
+        }
+        return palette;
     }
-    return palette;
   }
 
-  /// Converts RGB (0-255) to CIELAB coordinates for accurate perceptual matching.
-  /// This prevents color runaway and white blowout.
   static List<double> rgbToLab(int r, int g, int b) {
     double cr = r / 255.0;
     double cg = g / 255.0;
@@ -71,7 +96,6 @@ class ReframeProcessor {
     ];
   }
 
-  /// 4x4 Bayer matrix
   static const List<List<double>> bayer4x4 = [
     [ 0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0],
     [12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0],
@@ -79,14 +103,16 @@ class ReframeProcessor {
     [15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0]
   ];
 
-  /// Process photo with Spectra-6 dithering
+  /// Full dithering pipeline with resolution/density control and settings
   static Uint8List processImage(
     Uint8List inputBytes, {
+    PalettePreset preset = PalettePreset.spectra6,
     double saturation = 0.6,
     double brightnessFactor = 1.0,
     double colorFactor = 1.3,
+    double contrastFactor = 1.1,
     bool useFloydSteinberg = true,
-    int targetWidth = 600,
+    int densityResolution = 600, // Resolution density: 400 (Chunky/Grainy), 600 (Balanced), 800 (Fine)
   }) {
     img.Image? decoded = img.decodeImage(inputBytes);
     if (decoded == null) {
@@ -95,24 +121,32 @@ class ReframeProcessor {
 
     decoded = img.bakeOrientation(decoded);
 
+    // Apply density scaling
     img.Image resized;
     if (decoded.width >= decoded.height) {
-      resized = img.copyResize(decoded, width: targetWidth);
+      resized = img.copyResize(decoded, width: densityResolution);
     } else {
-      resized = img.copyResize(decoded, height: targetWidth);
+      resized = img.copyResize(decoded, height: densityResolution);
     }
 
-    // Boost colors slightly so the 6 pigments have clear contrast
+    // Color and contrast adjustments
+    if (brightnessFactor != 1.0) {
+      double bOffset = (brightnessFactor - 1.0) * 80;
+      resized = img.adjustColor(resized, brightness: bOffset);
+    }
+
     if (colorFactor != 1.0) {
       resized = img.adjustColor(resized, saturation: colorFactor);
     }
 
-    final palette = getBlendedPalette(saturation: saturation);
+    if (contrastFactor != 1.0) {
+      resized = img.adjustColor(resized, contrast: contrastFactor);
+    }
+
+    final palette = getPalette(preset: preset, saturation: saturation);
     final paletteLab = palette.map((p) => rgbToLab(p[0], p[1], p[2])).toList();
 
-    // Precompute 32x32x32 Look-Up Table (LUT) for CIELAB nearest color
-    // This gives mathematically exact perceptual matching (no green/white drift)
-    // and runs in less than 5ms!
+    // Fast 32-level LUT in CIELAB space
     final Uint8List lut = Uint8List(32 * 32 * 32);
     for (int r5 = 0; r5 < 32; r5++) {
       int r = (r5 * 255) ~/ 31;
@@ -166,8 +200,7 @@ class ReframeProcessor {
         }
       }
 
-      // Floyd-Steinberg error diffusion with damping to prevent error explosion (whiteout)
-      const double errorDamping = 0.85; // prevents cascading saturation
+      const double errorDamping = 0.90;
 
       for (int y = 0; y < height; y++) {
         final int yOffset = y * width;
@@ -220,8 +253,7 @@ class ReframeProcessor {
         }
       }
     } else {
-      // Ordered Bayer Dithering
-      const double threshold = 48.0;
+      const double threshold = 52.0;
       for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
           final p = resized.getPixel(x, y);
