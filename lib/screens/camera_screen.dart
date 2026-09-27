@@ -137,8 +137,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       final ditheredResult = await compute(_runDitheringIsolate, {
         'bytes': rawBytes,
         'saturation': _saturation,
-        'brightness': 1.1,
-        'color': 1.4,
+        'brightness': 1.0,
+        'color': 1.3,
         'floyd': _useFloydSteinberg,
       });
 
