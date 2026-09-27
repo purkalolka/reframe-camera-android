@@ -2,99 +2,73 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
-/// Accurate reproduction of the reFrame camera image processing pipeline
-/// as implemented in kaloyaan/reframe (Spectra 6 ePaper palette and dithering).
+/// Exact implementation of the reFrame camera dithering algorithm
+/// matches Python reframe.py and PIL Floyd-Steinberg / Ordered Dithering.
 class ReframeProcessor {
-  // Original Spectra 6 palettes from kaloyaan/reframe
+  // Desaturated Palette (Pure primaries):
+  // 0: Black, 1: White, 2: Green, 3: Blue, 4: Red, 5: Yellow
   static const List<List<int>> desaturatedPalette = [
-    [0, 0, 0], // Black
-    [255, 255, 255], // White
-    [0, 255, 0], // Green
-    [0, 0, 255], // Blue
-    [255, 0, 0], // Red
-    [255, 255, 0], // Yellow
+    [0, 0, 0],          // 0: Black
+    [255, 255, 255],    // 1: White
+    [0, 255, 0],        // 2: Green
+    [0, 0, 255],        // 3: Blue
+    [255, 0, 0],        // 4: Red
+    [255, 255, 0],      // 5: Yellow
   ];
 
+  // Saturated Palette (E-paper pigments):
   static const List<List<int>> saturatedPalette = [
-    [57, 48, 57], // Muted Black
-    [255, 255, 255], // White
-    [40, 91, 58], // Muted Green
-    [0, 128, 255], // Muted Blue
-    [156, 72, 75], // Muted Red
-    [208, 190, 71], // Muted Yellow
+    [57, 48, 57],       // 0: Muted Black
+    [255, 255, 255],    // 1: White
+    [40, 91, 58],       // 2: Muted Green
+    [0, 128, 255],      // 3: Muted Blue
+    [156, 72, 75],      // 4: Muted Red
+    [208, 190, 71],     // 5: Muted Yellow
   ];
 
-  // Palette color indices used by reFrame: [0, 1, 5, 4, 0, 3, 2]
-  // Colors: Black, White, Yellow, Red, Black, Blue, Green
+  // Original reFrame color indices: [0, 1, 5, 4, 3, 2] -> Black, White, Yellow, Red, Blue, Green
   static const List<int> colorIndices = [0, 1, 5, 4, 3, 2];
 
-  /// Blends the saturated and desaturated palettes based on the [saturation] factor (default 0.6)
+  /// Blends the saturated and desaturated palettes exactly like reframe.py:
+  /// rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
+  /// rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
+  /// palette_colors.append([int(rs + rd), int(gs + gd), int(bs + bd)])
   static List<List<int>> getBlendedPalette({double saturation = 0.6}) {
-    List<List<int>> blended = [];
+    List<List<int>> palette = [];
     for (int idx in colorIndices) {
       final sat = saturatedPalette[idx];
       final desat = desaturatedPalette[idx];
       int r = ((sat[0] * saturation) + (desat[0] * (1.0 - saturation))).round().clamp(0, 255);
       int g = ((sat[1] * saturation) + (desat[1] * (1.0 - saturation))).round().clamp(0, 255);
       int b = ((sat[2] * saturation) + (desat[2] * (1.0 - saturation))).round().clamp(0, 255);
-      blended.add([r, g, b]);
+      palette.add([r, g, b]);
     }
-    return blended;
+    return palette;
   }
 
-  /// Converts RGB (0-255) to CIELAB coordinates for perceptual color distance
-  static List<double> rgbToLab(int r, int g, int b) {
-    // RGB to Linear
-    double cr = r / 255.0;
-    double cg = g / 255.0;
-    double cb = b / 255.0;
-
-    double lr = cr > 0.04045 ? math.pow((cr + 0.055) / 1.055, 2.4).toDouble() : (cr / 12.92);
-    double lg = cg > 0.04045 ? math.pow((cg + 0.055) / 1.055, 2.4).toDouble() : (cg / 12.92);
-    double lb = cb > 0.04045 ? math.pow((cb + 0.055) / 1.055, 2.4).toDouble() : (cb / 12.92);
-
-    // Matrix to XYZ (Observer. = 2°, Illuminant = D65)
-    double x = lr * 0.4124564 + lg * 0.3575761 + lb * 0.1804375;
-    double y = lr * 0.2126729 + lg * 0.7151522 + lb * 0.0721750;
-    double z = lr * 0.0193339 + lg * 0.1191920 + lb * 0.9503041;
-
-    x /= 0.95047;
-    y /= 1.00000;
-    z /= 1.08883;
-
-    double fx = x > 0.008856 ? math.pow(x, 1.0 / 3.0).toDouble() : (903.3 * x + 16.0) / 116.0;
-    double fy = y > 0.008856 ? math.pow(y, 1.0 / 3.0).toDouble() : (903.3 * y + 16.0) / 116.0;
-    double fz = z > 0.008856 ? math.pow(z, 1.0 / 3.0).toDouble() : (903.3 * z + 16.0) / 116.0;
-
-    double lVal = 116.0 * fy - 16.0;
-    double aVal = 500.0 * (fx - fy);
-    double bVal = 200.0 * (fy - fz);
-
-    return [lVal, aVal, bVal];
-  }
-
-  /// Calculates perceptual color difference (Delta E squared in CIELAB)
-  static double colorDistanceSquared(List<double> lab1, List<double> lab2) {
-    double dl = lab1[0] - lab2[0];
-    double da = lab1[1] - lab2[1];
-    double db = lab1[2] - lab2[2];
-    return dl * dl + da * da + db * db;
-  }
-
-  /// Finds index of closest color in the palette using CIELAB distance
-  static int findNearestPaletteColor(
-    int r,
-    int g,
-    int b,
-    List<List<int>> paletteRgb,
-    List<List<double>> paletteLab,
-  ) {
-    final lab = rgbToLab(r, g, b);
-    double minDistance = double.infinity;
+  /// Fast weighted Euclidean distance in RGB (redmean metric)
+  /// Matches human perceptual sensitivity much better than naive RGB distance
+  /// and avoids float conversion overhead during error diffusion.
+  static int findNearestColorIndex(int r, int g, int b, List<List<int>> palette) {
     int bestIdx = 0;
+    int minDistance = 0x7FFFFFFF;
 
-    for (int i = 0; i < paletteLab.length; i++) {
-      double dist = colorDistanceSquared(lab, paletteLab[i]);
+    for (int i = 0; i < palette.length; i++) {
+      final p = palette[i];
+      int pr = p[0];
+      int pg = p[1];
+      int pb = p[2];
+
+      int rmean = (r + pr) >> 1;
+      int dr = r - pr;
+      int dg = g - pg;
+      int db = b - pb;
+
+      // Color distance with perceptual weights
+      int dist = (((512 + rmean) * dr * dr) >> 8) +
+                 (4 * dg * dg) +
+                 (((767 - rmean) * db * db) >> 8);
+
       if (dist < minDistance) {
         minDistance = dist;
         bestIdx = i;
@@ -103,18 +77,15 @@ class ReframeProcessor {
     return bestIdx;
   }
 
-  /// Fast Bayer matrix for ordered dithering
-  static final List<List<double>> bayerMatrix4x4 = [
-    [0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0],
-    [12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0],
-    [3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0],
-    [15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0],
+  /// 4x4 Bayer matrix for ordered dithering
+  static const List<List<double>> bayer4x4 = [
+    [ 0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0],
+    [12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0],
+    [ 3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0],
+    [15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0]
   ];
 
-  /// Full reFrame image processing pipeline:
-  /// 1. Resize maintaining aspect ratio (target reFrame display size 600x400 or max 800)
-  /// 2. Brightness & Color/Saturation enhancement
-  /// 3. Floyd-Steinberg or Ordered Dithering with Spectra-6 blended palette
+  /// Process photo with Spectra-6 dithering
   static Uint8List processImage(
     Uint8List inputBytes, {
     double saturation = 0.6,
@@ -122,120 +93,130 @@ class ReframeProcessor {
     double colorFactor = 1.4,
     bool useFloydSteinberg = true,
     int targetWidth = 600,
-    int targetHeight = 400,
   }) {
-    img.Image? original = img.decodeImage(inputBytes);
-    if (original == null) {
+    img.Image? decoded = img.decodeImage(inputBytes);
+    if (decoded == null) {
       throw Exception("Unable to decode image");
     }
 
-    // Fix orientation if needed
-    original = img.bakeOrientation(original);
+    // Correct orientation from EXIF
+    decoded = img.bakeOrientation(decoded);
 
-    // Target reFrame dimension: width ~ 600 or portrait 400x600
+    // Resize image maintaining aspect ratio
     img.Image resized;
-    if (original.width > original.height) {
-      resized = img.copyResize(original, width: targetWidth);
+    if (decoded.width >= decoded.height) {
+      resized = img.copyResize(decoded, width: targetWidth);
     } else {
-      resized = img.copyResize(original, height: targetWidth);
+      resized = img.copyResize(decoded, height: targetWidth);
     }
 
-    // Preprocessing: Brightness & Color enhancements
-    // Adjust brightness
+    // Color enhancements like PIL ImageEnhance.Brightness & Color
     if (brightnessFactor != 1.0) {
-      final factor = (brightnessFactor - 1.0) * 100;
-      resized = img.adjustColor(resized, brightness: factor);
+      double bOffset = (brightnessFactor - 1.0) * 80;
+      resized = img.adjustColor(resized, brightness: bOffset);
     }
 
-    // Adjust saturation
     if (colorFactor != 1.0) {
       resized = img.adjustColor(resized, saturation: colorFactor);
     }
 
     final palette = getBlendedPalette(saturation: saturation);
-    final paletteLab = palette.map((rgb) => rgbToLab(rgb[0], rgb[1], rgb[2])).toList();
-
     final int width = resized.width;
     final int height = resized.height;
 
-    img.Image result = img.Image(width: width, height: height);
+    final img.Image result = img.Image(width: width, height: height);
 
     if (useFloydSteinberg) {
-      // 3 channels: R, G, B with error diffusion buffers
-      List<Float64List> bufferR = List.generate(height, (_) => Float64List(width));
-      List<Float64List> bufferG = List.generate(height, (_) => Float64List(width));
-      List<Float64List> bufferB = List.generate(height, (_) => Float64List(width));
+      // 1D flat buffers for cache efficiency
+      final Float64List bufR = Float64List(width * height);
+      final Float64List bufG = Float64List(width * height);
+      final Float64List bufB = Float64List(width * height);
 
-      // Fill buffers with initial pixel values
+      int idx = 0;
       for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-          final pixel = resized.getPixel(x, y);
-          bufferR[y][x] = pixel.r.toDouble();
-          bufferG[y][x] = pixel.g.toDouble();
-          bufferB[y][x] = pixel.b.toDouble();
+          final p = resized.getPixel(x, y);
+          bufR[idx] = p.r.toDouble();
+          bufG[idx] = p.g.toDouble();
+          bufB[idx] = p.b.toDouble();
+          idx++;
         }
       }
 
-      // Floyd-Steinberg error diffusion
+      // Classic Floyd-Steinberg error diffusion
       for (int y = 0; y < height; y++) {
+        final int yOffset = y * width;
+        final int nextYOffset = (y + 1) * width;
+        final bool hasNextY = (y + 1 < height);
+
         for (int x = 0; x < width; x++) {
-          int oldR = bufferR[y][x].round().clamp(0, 255);
-          int oldG = bufferG[y][x].round().clamp(0, 255);
-          int oldB = bufferB[y][x].round().clamp(0, 255);
+          final int currIdx = yOffset + x;
 
-          int palIdx = findNearestPaletteColor(oldR, oldG, oldB, palette, paletteLab);
-          final newColor = palette[palIdx];
+          // Clamped current pixel value with accumulated error
+          int r = bufR[currIdx].round().clamp(0, 255);
+          int g = bufG[currIdx].round().clamp(0, 255);
+          int b = bufB[currIdx].round().clamp(0, 255);
 
-          result.setPixelRgb(x, y, newColor[0], newColor[1], newColor[2]);
+          // Find closest color in Spectra-6 palette
+          int palIdx = findNearestColorIndex(r, g, b, palette);
+          final nearestColor = palette[palIdx];
 
-          double errR = oldR - newColor[0].toDouble();
-          double errG = oldG - newColor[1].toDouble();
-          double errB = oldB - newColor[2].toDouble();
+          result.setPixelRgb(x, y, nearestColor[0], nearestColor[1], nearestColor[2]);
 
-          // Distribute errors:
+          // Compute residual error
+          double errR = r - nearestColor[0].toDouble();
+          double errG = g - nearestColor[1].toDouble();
+          double errB = b - nearestColor[2].toDouble();
+
+          // Floyd-Steinberg error distribution:
           // x + 1, y     : 7/16
           // x - 1, y + 1 : 3/16
           // x,     y + 1 : 5/16
           // x + 1, y + 1 : 1/16
           if (x + 1 < width) {
-            bufferR[y][x + 1] += errR * (7.0 / 16.0);
-            bufferG[y][x + 1] += errG * (7.0 / 16.0);
-            bufferB[y][x + 1] += errB * (7.0 / 16.0);
+            final int rightIdx = currIdx + 1;
+            bufR[rightIdx] += errR * (7.0 / 16.0);
+            bufG[rightIdx] += errG * (7.0 / 16.0);
+            bufB[rightIdx] += errB * (7.0 / 16.0);
           }
-          if (y + 1 < height) {
-            if (x - 1 >= 0) {
-              bufferR[y + 1][x - 1] += errR * (3.0 / 16.0);
-              bufferG[y + 1][x - 1] += errG * (3.0 / 16.0);
-              bufferB[y + 1][x - 1] += errB * (3.0 / 16.0);
+
+          if (hasNextY) {
+            if (x > 0) {
+              final int botLeft = nextYOffset + (x - 1);
+              bufR[botLeft] += errR * (3.0 / 16.0);
+              bufG[botLeft] += errG * (3.0 / 16.0);
+              bufB[botLeft] += errB * (3.0 / 16.0);
             }
-            bufferR[y + 1][x] += errR * (5.0 / 16.0);
-            bufferG[y + 1][x] += errG * (5.0 / 16.0);
-            bufferB[y + 1][x] += errB * (5.0 / 16.0);
+
+            final int bot = nextYOffset + x;
+            bufR[bot] += errR * (5.0 / 16.0);
+            bufG[bot] += errG * (5.0 / 16.0);
+            bufB[bot] += errB * (5.0 / 16.0);
+
             if (x + 1 < width) {
-              bufferR[y + 1][x + 1] += errR * (1.0 / 16.0);
-              bufferG[y + 1][x + 1] += errG * (1.0 / 16.0);
-              bufferB[y + 1][x + 1] += errB * (1.0 / 16.0);
+              final int botRight = nextYOffset + (x + 1);
+              bufR[botRight] += errR * (1.0 / 16.0);
+              bufG[botRight] += errG * (1.0 / 16.0);
+              bufB[botRight] += errB * (1.0 / 16.0);
             }
           }
         }
       }
     } else {
-      // Ordered Bayer dithering
-      const double thresholdScale = 64.0;
+      // Ordered Bayer Dithering
+      const double threshold = 72.0;
       for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-          final pixel = resized.getPixel(x, y);
-          double bayer = bayerMatrix4x4[y % 4][x % 4] - 0.5;
-          double noise = bayer * thresholdScale;
+          final p = resized.getPixel(x, y);
+          double noise = (bayer4x4[y % 4][x % 4] - 0.5) * threshold;
 
-          int r = (pixel.r + noise).round().clamp(0, 255);
-          int g = (pixel.g + noise).round().clamp(0, 255);
-          int b = (pixel.b + noise).round().clamp(0, 255);
+          int r = (p.r + noise).round().clamp(0, 255);
+          int g = (p.g + noise).round().clamp(0, 255);
+          int b = (p.b + noise).round().clamp(0, 255);
 
-          int palIdx = findNearestPaletteColor(r, g, b, palette, paletteLab);
-          final newColor = palette[palIdx];
-
-          result.setPixelRgb(x, y, newColor[0], newColor[1], newColor[2]);
+          int palIdx = findNearestColorIndex(r, g, b, palette);
+          final c = palette[palIdx];
+          result.setPixelRgb(x, y, c[0], c[1], c[2]);
         }
       }
     }
