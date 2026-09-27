@@ -1,0 +1,31 @@
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# Android Studio will pack this folder for problems. It is necessary to prevent.
+build/
+android/.gradle
+android/captures/
+android/gradleBuild/
+android/local.properties
+android/app/build/
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+
+# Secrets & Keys
+*.jks
+*.keystore
+key.properties
