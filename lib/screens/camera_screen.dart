@@ -236,12 +236,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   int _calculateCaptureRotation() {
-    // Determine exact clockwise rotation in degrees to produce upright photo
+    // Correct physical sensor rotation for upright ePaper output
     switch (_deviceOrientation) {
       case DevicePhysicalOrientation.landscapeLeft:
-        return 90;
-      case DevicePhysicalOrientation.landscapeRight:
         return 270;
+      case DevicePhysicalOrientation.landscapeRight:
+        return 90;
       case DevicePhysicalOrientation.portraitDown:
         return 180;
       case DevicePhysicalOrientation.portraitUp:
@@ -557,22 +557,21 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _buildRotatedButton(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Text(
-                        "reFrame // ${_palettePreset.name.toUpperCase()}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
+                  // Static branding (does NOT rotate)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.6),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Text(
+                      "reFrame // ${_palettePreset.name.toUpperCase()}",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
