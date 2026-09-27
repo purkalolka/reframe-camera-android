@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:gal/gal.dart';
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -17,23 +17,19 @@ class PhotoResultScreen extends StatelessWidget {
 
   Future<void> _saveToGallery(BuildContext context) async {
     try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        await Gal.requestAccess();
-      }
-
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/reframe_$photoId.png');
-      await file.writeAsBytes(imageBytes);
-
-      await Gal.putImage(file.path, album: "reFrame");
+      final result = await ImageGallerySaverPlus.saveImage(
+        imageBytes,
+        name: "reframe_$photoId",
+        quality: 100,
+      );
 
       if (context.mounted) {
+        bool isSuccess = result != null && (result['isSuccess'] == true || result['filePath'] != null);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Photo saved to Gallery (album 'reFrame')"),
-            backgroundColor: Color(0xFF2E7D32),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(isSuccess ? "Photo saved to Gallery!" : "Failed to save photo"),
+            backgroundColor: isSuccess ? const Color(0xFF2E7D32) : Colors.redAccent,
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -144,7 +140,7 @@ class PhotoResultScreen extends StatelessWidget {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
+                            const Text(
                               "Spectra 6 • 6-Color E-Ink",
                               style: TextStyle(
                                 fontFamily: 'monospace',
@@ -155,7 +151,7 @@ class PhotoResultScreen extends StatelessWidget {
                             ),
                             Text(
                               "#$photoId",
-                              style: TextStyle(
+                              style: const TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 11,
                                 color: Colors.black54,
