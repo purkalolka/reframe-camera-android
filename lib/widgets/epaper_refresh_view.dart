@@ -4,13 +4,18 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
-/// Authentic ePaper refresh simulator (electronic shelf tags & Waveshare e-ink).
-/// Real electrophoretic displays don't use soft gradients or standard fades.
-/// They use voltage pulses that physically move charged micro-particles in stages:
-/// 1. Ghosting erasure & polarity inversion flashes (black -> invert -> white clear)
-/// 2. Granular horizontal sweep updating coarse pixel blocks
-/// 3. Particle separation: Black/white micro-capsules pop into place
-/// 4. Color pigments (Yellow, Red, Blue) electrostatically settle into place
+/// Accurate physical simulation of an electrophoretic ePaper display (E-Ink / Spectra 6).
+///
+/// Implements the exact multi-phase physics described in electrophoretic display waveforms:
+///
+/// Phase 0: Old image static
+/// Phase 1: Rapid 2-3 harsh B/W and negative polarity inversion flashes (clears charge memory)
+/// Phase 2: Chaotic grainy particulate boiling noise (electrified micro-capsules vibrating in fluid)
+/// Phase 3: Stochastic crystallization & percolation clusters:
+///          - Dark silhouettes pop up first like ink in chemical developer fluid
+///          - Micro-pixels settle independently in blotchy, drying clusters
+///          - Color pigments (Red, Yellow, Blue) separate and achieve full electrostatic saturation
+/// Phase 4: Final crisp, matte, static lock-in.
 class EpaperRefreshView extends StatefulWidget {
   final Uint8List rawImageBytes;
   final Uint8List ditheredImageBytes;
@@ -22,7 +27,7 @@ class EpaperRefreshView extends StatefulWidget {
     required this.rawImageBytes,
     required this.ditheredImageBytes,
     required this.onComplete,
-    this.duration = const Duration(milliseconds: 3600),
+    this.duration = const Duration(milliseconds: 3800),
   }) : super(key: key);
 
   @override
@@ -35,10 +40,16 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
   ui.Image? _ditheredUiImage;
   ui.Image? _rawUiImage;
 
+  // Precomputed pseudo-random noise matrix (128x128) for particle boiling & blotch crystallization
+  late final Float32List _noiseGrid;
+  static const int _gridSize = 128;
+
   @override
   void initState() {
     super.initState();
+    _initNoiseGrid();
     _decodeImages();
+
     _controller = AnimationController(
       vsync: this,
       duration: widget.duration,
@@ -47,6 +58,14 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
     _controller.forward().then((_) {
       widget.onComplete();
     });
+  }
+
+  void _initNoiseGrid() {
+    final random = math.Random(42);
+    _noiseGrid = Float32List(_gridSize * _gridSize);
+    for (int i = 0; i < _noiseGrid.length; i++) {
+      _noiseGrid[i] = random.nextDouble();
+    }
   }
 
   Future<void> _decodeImages() async {
@@ -74,7 +93,7 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
   Widget build(BuildContext context) {
     if (_ditheredUiImage == null) {
       return Container(
-        color: const Color(0xFFE5E5DF),
+        color: const Color(0xFFE8E6E0), // Warm matte e-paper off-white
         child: const Center(
           child: CircularProgressIndicator(color: Colors.black87),
         ),
@@ -90,13 +109,13 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
             // Hardware enclosure mockup
             child: Container(
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F7F2), // matte white e-ink bezel
+                color: const Color(0xFFE8E6E0), // Warm off-white matte paper frame
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFFD6D6CE), width: 1.5),
+                border: Border.all(color: const Color(0xFFD0CEC8), width: 2),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
-                    blurRadius: 20,
+                    color: Colors.black.withOpacity(0.4),
+                    blurRadius: 24,
                     offset: const Offset(0, 10),
                   ),
                 ],
@@ -113,10 +132,12 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
                         animation: _controller,
                         builder: (context, child) {
                           return CustomPaint(
-                            painter: _EpaperHardwarePainter(
+                            painter: _EInkPhysicalWaveformPainter(
                               progress: _controller.value,
                               ditheredImage: _ditheredUiImage!,
                               rawImage: _rawUiImage,
+                              noiseGrid: _noiseGrid,
+                              gridSize: _gridSize,
                             ),
                             size: Size.infinite,
                           );
@@ -129,17 +150,17 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
                     animation: _controller,
                     builder: (context, _) {
                       final p = _controller.value;
-                      String statusText = "INITIALIZING WAVEFORM...";
-                      if (p < 0.25) {
-                        statusText = "CLEARING RESIDUAL PARTICLES";
-                      } else if (p < 0.50) {
-                        statusText = "POLARITY INVERSION CYCLE";
-                      } else if (p < 0.75) {
-                        statusText = "WRITING MONO INK MATRIX";
+                      String statusText;
+                      if (p < 0.22) {
+                        statusText = "POLARITY INVERSION FLASHES";
+                      } else if (p < 0.45) {
+                        statusText = "ELECTROSTATIC DUST BOILING";
+                      } else if (p < 0.78) {
+                        statusText = "CRYSTALLIZING INK PARTICLES";
                       } else if (p < 0.95) {
                         statusText = "SETTLING SPECTRA-6 PIGMENTS";
                       } else {
-                        statusText = "DISPLAY REFRESH READY";
+                        statusText = "IMAGE STABILIZED";
                       }
 
                       return Row(
@@ -150,7 +171,7 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
                             style: const TextStyle(
                               fontFamily: 'monospace',
                               fontSize: 10,
-                              color: Colors.black87,
+                              color: Color(0xFF2B2B28), // Muted graphite black
                               fontWeight: FontWeight.bold,
                               letterSpacing: 0.8,
                             ),
@@ -160,7 +181,7 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
                             style: const TextStyle(
                               fontFamily: 'monospace',
                               fontSize: 10,
-                              color: Colors.black54,
+                              color: Color(0xFF6B6A66),
                             ),
                           ),
                         ],
@@ -177,15 +198,19 @@ class _EpaperRefreshViewState extends State<EpaperRefreshView>
   }
 }
 
-class _EpaperHardwarePainter extends CustomPainter {
+class _EInkPhysicalWaveformPainter extends CustomPainter {
   final double progress;
   final ui.Image ditheredImage;
   final ui.Image? rawImage;
+  final Float32List noiseGrid;
+  final int gridSize;
 
-  _EpaperHardwarePainter({
+  _EInkPhysicalWaveformPainter({
     required this.progress,
     required this.ditheredImage,
     this.rawImage,
+    required this.noiseGrid,
+    required this.gridSize,
   });
 
   @override
@@ -198,132 +223,158 @@ class _EpaperHardwarePainter extends CustomPainter {
       ditheredImage.height.toDouble(),
     );
 
-    // E-ink paper background
-    final paperPaint = Paint()..color = const Color(0xFFF2F2EC);
+    // Characteristic E-Ink warm matte off-white background (#E8E6E0)
+    final paperPaint = Paint()..color = const Color(0xFFE8E6E0);
     canvas.drawRect(rect, paperPaint);
 
     final pixelPaint = Paint()
       ..filterQuality = FilterQuality.none
       ..isAntiAlias = false;
 
-    // STAGE 1: Polarity flashes & ghosting erasure (0.00 -> 0.35)
-    // Real ePaper flashes black, then negative/invert, then clears to white
-    if (progress < 0.12) {
-      // Flash full black
-      canvas.drawRect(rect, Paint()..color = const Color(0xFF1E1E1E));
-      return;
-    } else if (progress < 0.22) {
-      // Invert flash (ghosting negation pulse)
-      if (rawImage != null) {
-        final invertPaint = Paint()
-          ..colorFilter = const ColorFilter.matrix([
-            -1,  0,  0, 0, 255,
-             0, -1,  0, 0, 255,
-             0,  0, -1, 0, 255,
-             0,  0,  0, 1,   0,
-          ]);
-        canvas.drawImageRect(rawImage!, srcRect, rect, invertPaint);
+    // ─────────────────────────────────────────────────────────────
+    // STAGE 1: «Встряска» / Полярные инверсии (0.00 -> 0.22)
+    // 2-3 резкие вспышки негатива и переполюсовки зарядов
+    // ─────────────────────────────────────────────────────────────
+    if (progress < 0.22) {
+      // 3 rapid cycles
+      // 0.00-0.07: Flash 1 (Negative inversion)
+      // 0.07-0.12: Flash 2 (Graphite Blackout #232321)
+      // 0.12-0.17: Flash 3 (Inverted residual)
+      // 0.17-0.22: Flash 4 (Pure blank paper reset)
+      if (progress < 0.07) {
+        _drawInverted(canvas, srcRect, rect);
+      } else if (progress < 0.12) {
+        canvas.drawRect(rect, Paint()..color = const Color(0xFF232321)); // Graphite black
+      } else if (progress < 0.17) {
+        _drawInverted(canvas, srcRect, rect);
       } else {
-        canvas.drawRect(rect, Paint()..color = Colors.white);
+        canvas.drawRect(rect, Paint()..color = const Color(0xFFE8E6E0));
       }
-      return;
-    } else if (progress < 0.35) {
-      // Blank paper flash before writing
-      canvas.drawRect(rect, Paint()..color = const Color(0xFFFAF9F5));
       return;
     }
 
-    // STAGE 2: Stepped Pixel Line-by-Line / Block update (0.35 -> 0.75)
-    // Like electronic price tags (ESL) updating line by line in discrete blocks
-    if (progress < 0.75) {
-      double writeProgress = (progress - 0.35) / (0.75 - 0.35); // 0.0 -> 1.0
+    // ─────────────────────────────────────────────────────────────
+    // STAGE 2: «Хаотичный шум» / Кипящая наэлектризованная пыль (0.22 -> 0.45)
+    // Зернистая рябь по всей площади: черные и белые крупинки хаотично
+    // мерцают вразнобой, пиксели вибрируют перед оседанием
+    // ─────────────────────────────────────────────────────────────
+    if (progress < 0.45) {
+      double t = (progress - 0.22) / (0.45 - 0.22); // 0.0 -> 1.0
 
-      // Calculate discrete stepped scanline (quantized into visible physical blocks)
-      const int totalBands = 24;
-      int currentBand = (writeProgress * totalBands).floor();
-      double bandHeight = size.height / totalBands;
-      double revealedHeight = currentBand * bandHeight;
-
-      // Draw grayscale/mono layer of dithered image for completed bands
-      if (revealedHeight > 0) {
-        canvas.save();
-        canvas.clipRect(Rect.fromLTWH(0, 0, size.width, revealedHeight));
-
-        // High contrast black & white particle stage
-        final monoPaint = Paint()
-          ..filterQuality = FilterQuality.none
-          ..colorFilter = const ColorFilter.matrix([
-            0.33, 0.33, 0.33, 0, 0,
-            0.33, 0.33, 0.33, 0, 0,
-            0.33, 0.33, 0.33, 0, 0,
-            0,    0,    0,    1, 0,
-          ]);
-
-        canvas.drawImageRect(ditheredImage, srcRect, rect, monoPaint);
-        canvas.restore();
-      }
-
-      // Draw the active scanning bar (the high-voltage pulse line)
-      if (currentBand < totalBands) {
-        final activeRect = Rect.fromLTWH(
-          0,
-          revealedHeight,
-          size.width,
-          bandHeight,
+      // Draw faint ghost silhouette under the boiling noise
+      final ghostPaint = Paint()
+        ..filterQuality = FilterQuality.none
+        ..colorFilter = ColorFilter.mode(
+          const Color(0xFFE8E6E0).withOpacity(1.0 - (t * 0.5)),
+          BlendMode.dstOut,
         );
-        // Flickers black/white while voltage is applied to the active row
-        final isEven = (currentBand % 2 == 0);
-        canvas.drawRect(
-          activeRect,
-          Paint()..color = isEven ? const Color(0xFF222222) : const Color(0xFFECECE7),
-        );
+      _drawMonochrome(canvas, srcRect, rect, ghostPaint);
+
+      // Draw boiling particulate noise
+      final noisePaint = Paint()..style = PaintingStyle.fill;
+      int seedOffset = (progress * 1000).toInt() % 17;
+      double cellSize = size.width / 48.0;
+
+      for (int gy = 0; gy < 32; gy++) {
+        for (int gx = 0; gx < 48; gx++) {
+          int nIdx = ((gy * 3 + seedOffset) % gridSize) * gridSize + ((gx * 3 + seedOffset) % gridSize);
+          double nVal = noiseGrid[nIdx];
+
+          // Particle flicker: dark graphite particles jumping on paper
+          if (nVal > 0.58) {
+            noisePaint.color = (nVal > 0.82)
+                ? const Color(0xFF232321) // Muted graphite
+                : const Color(0xFF7A7973); // Mid-gray pigment dust
+            canvas.drawRect(
+              Rect.fromLTWH(gx * cellSize, gy * cellSize, cellSize, cellSize),
+              noisePaint,
+            );
+          }
+        }
       }
       return;
     }
 
-    // STAGE 3: Pigment color separation & migration (0.75 -> 1.00)
-    // On Spectra 6, colored pigments (Red, Yellow, Blue) take longer to migrate
-    // than black/white, settling in granular waves
-    double colorProgress = (progress - 0.75) / (1.00 - 0.75); // 0.0 -> 1.0
+    // ─────────────────────────────────────────────────────────────
+    // STAGE 3: Постепенная кристаллизация & оседание чернил (0.45 -> 0.90)
+    // Чернила растекаются и оседают неравномерными «влажными пятнами»
+    // Силуэты темнеют, пиксели случайными кластерами фиксируются в цвет
+    // ─────────────────────────────────────────────────────────────
+    if (progress < 0.90) {
+      double t = (progress - 0.45) / (0.90 - 0.45); // 0.0 -> 1.0
 
-    // First draw the monochrome base
-    final monoPaint = Paint()
-      ..filterQuality = FilterQuality.none
-      ..colorFilter = const ColorFilter.matrix([
-        0.33, 0.33, 0.33, 0, 0,
-        0.33, 0.33, 0.33, 0, 0,
-        0.33, 0.33, 0.33, 0, 0,
-        0,    0,    0,    1, 0,
-      ]);
-    canvas.drawImageRect(ditheredImage, srcRect, rect, monoPaint);
+      // Step 3A: Draw the emerging monochrome base (dark silhouettes forming first)
+      final monoFadePaint = Paint()
+        ..filterQuality = FilterQuality.none
+        ..colorFilter = const ColorFilter.matrix([
+          0.33, 0.33, 0.33, 0, 0,
+          0.33, 0.33, 0.33, 0, 0,
+          0.33, 0.33, 0.33, 0, 0,
+          0,    0,    0,    1, 0,
+        ]);
+      canvas.drawImageRect(ditheredImage, srcRect, rect, monoFadePaint);
 
-    // Reveal color pigments horizontally in a stepped electrical wave
-    const int colorSteps = 16;
-    int step = (colorProgress * colorSteps).floor();
-    double stepWidth = size.width / colorSteps;
-    double coloredWidth = step * stepWidth;
+      // Step 3B: Non-linear stochastic percolation clusters (blotchy drying patches)
+      // Each block crystallizes into full color based on local threshold + noise
+      double cellSize = size.width / 40.0;
+      final blockSrcW = ditheredImage.width / 40.0;
+      final blockSrcH = ditheredImage.height / (size.height / cellSize);
 
-    if (coloredWidth > 0) {
-      canvas.save();
-      canvas.clipRect(Rect.fromLTWH(0, 0, coloredWidth, size.height));
-      canvas.drawImageRect(ditheredImage, srcRect, rect, pixelPaint);
-      canvas.restore();
+      for (int gy = 0; gy < (size.height / cellSize).ceil(); gy++) {
+        for (int gx = 0; gx < 40; gx++) {
+          int nIdx = ((gy * 4) % gridSize) * gridSize + ((gx * 4) % gridSize);
+          double localThreshold = noiseGrid[nIdx]; // 0.0 -> 1.0
+
+          // If current progress surpasses local patch threshold, this patch crystallizes
+          if (t >= localThreshold * 0.9) {
+            canvas.save();
+            canvas.clipRect(Rect.fromLTWH(gx * cellSize, gy * cellSize, cellSize, cellSize));
+            canvas.drawImageRect(ditheredImage, srcRect, rect, pixelPaint);
+            canvas.restore();
+          } else if (t >= localThreshold * 0.5) {
+            // Emerging ink dust on edge of drying patch
+            final edgeDust = Paint()
+              ..color = const Color(0xFF232321).withOpacity(0.35)
+              ..style = PaintingStyle.fill;
+            canvas.drawRect(
+              Rect.fromLTWH(gx * cellSize, gy * cellSize, cellSize, cellSize),
+              edgeDust,
+            );
+          }
+        }
+      }
+      return;
     }
 
-    // Draw active color wave pulse line
-    if (step < colorSteps && colorProgress < 0.98) {
-      final activeColorBar = Rect.fromLTWH(coloredWidth, 0, stepWidth, size.height);
-      canvas.drawRect(
-        activeColorBar,
-        Paint()
-          ..color = const Color(0xFFD0BE47).withOpacity(0.35) // Yellow Spectra pigment pulse
-          ..style = PaintingStyle.fill,
-      );
+    // ─────────────────────────────────────────────────────────────
+    // STAGE 4: Финальная стабилизация (0.90 -> 1.00)
+    // Изображение полностью затвердело, чёткое, матовое, статичное
+    // ─────────────────────────────────────────────────────────────
+    canvas.drawImageRect(ditheredImage, srcRect, rect, pixelPaint);
+  }
+
+  void _drawInverted(Canvas canvas, Rect srcRect, Rect dstRect) {
+    if (rawImage != null) {
+      final invertPaint = Paint()
+        ..filterQuality = FilterQuality.none
+        ..colorFilter = const ColorFilter.matrix([
+          -1,  0,  0, 0, 255,
+           0, -1,  0, 0, 255,
+           0,  0, -1, 0, 255,
+           0,  0,  0, 1,   0,
+        ]);
+      canvas.drawImageRect(rawImage!, srcRect, dstRect, invertPaint);
+    } else {
+      canvas.drawRect(dstRect, Paint()..color = const Color(0xFF232321));
     }
   }
 
+  void _drawMonochrome(Canvas canvas, Rect srcRect, Rect dstRect, Paint paint) {
+    canvas.drawImageRect(ditheredImage, srcRect, dstRect, paint);
+  }
+
   @override
-  bool shouldRepaint(covariant _EpaperHardwarePainter oldDelegate) {
+  bool shouldRepaint(covariant _EInkPhysicalWaveformPainter oldDelegate) {
     return oldDelegate.progress != progress;
   }
 }
