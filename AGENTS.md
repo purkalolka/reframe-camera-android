@@ -27,12 +27,12 @@ flutter build apk --release
 lib/
   main.dart                    # App entry, locks orientation to portraitUp
   screens/
-    camera_screen.dart         # Main UI, accelerometer logic, capture flow
-    photo_result_screen.dart   # Shows result; save/share buttons
+    camera_screen.dart         # Main UI, accelerometer logic, settings persistence, capture flow
+    photo_result_screen.dart   # Shows result; save/share buttons with temp cache cleanup
   services/
     reframe_processor.dart     # Dithering engine (Floyd-Steinberg + Bayer 4x4, CIELAB LUT)
   widgets/
-    epaper_refresh_view.dart   # ePaper flash animation shown between capture and result
+    epaper_refresh_view.dart   # Authentic multi-phase retail ESL/ePaper refresh simulator
 android/
   app/build.gradle             # compileSdkVersion 35, minSdk 21, namespace com.reframe.camera
   build.gradle                 # Forces compileSdk 35 on all subprojects (needed by deps)
@@ -51,9 +51,11 @@ android/
 | **No system auto-rotate** | Icons rotate via accelerometer (`sensors_plus`), not the OS orientation. The screen never rotates. |
 | **`reFrame // SPECTRA6` label must NOT rotate** | It is static; only icon buttons rotate. Do not pass it through `_buildRotatedButton`. |
 | **Settings only via gear icon** | No duplicate settings button in the top bar — only the bottom gear icon opens the settings modal. |
+| **Settings persistence** | All user preferences (density, contrast, boost, palette, refresh speed, dithering mode) are persisted via `shared_preferences`. |
 | **Front camera: mirror in both places** | Preview uses `Transform(rotationY: pi)`. Saved image uses `img.flipHorizontal` in `processImage()`. |
 | **Adaptive icon only in `mipmap-anydpi-v26/`** | Other `mipmap-*` folders use PNG. Do not add `ic_launcher.xml` to them. |
 | **Dithering in isolate** | `ReframeProcessor.processImage()` is called via `compute()` — keep it a pure top-level/static function. |
+| **No native memory leaks** | `ui.Image` descriptors must be disposed in `dispose()` in `epaper_refresh_view.dart`. |
 
 ---
 
@@ -77,22 +79,20 @@ Accelerometer: `x > 0` = phone tilted left = `landscapeLeft`; `x < 0` = `landsca
 - **Bayer 4×4** ordered dither using CIELAB ΔE² for palette matching.
 - CIELAB 32-level LUT is precomputed per-frame.
 - Palette presets: `spectra6` (default), `retro3Color`, `monochrome`, `cyberpunk`.
-- Palette selector + Floyd/Bayer toggle chip are exposed in the UI settings modal.
+- Palette selector, refresh speed slider, and Floyd/Bayer toggle chip are fully functional and saved.
 
 ---
 
 ## ePaper refresh animation (`epaper_refresh_view.dart`)
 
-Discrete voltage-pulse flash sequencer — no directional scanlines or wave sweeps.
-Entire screen flashes through states in sequence (each ~180–240 ms):
-1. Negative/inverted raw capture
-2. Graphite blackout (`#21211F`)
-3. Off-white paper clear (`#E8E6E0`)
-4. Inverted dithered image
-5. Monochrome (grayscale) dithered image
-6. Final Spectra-6 dithered image (settled)
+Physical multi-phase electrophoretic refresh simulation with discrete 4-level pixel flips (White `#E8E6E0`, Light Gray `#B5B3AC`, Dark Gray `#555450`, Charcoal `#21211F`):
+1. **0–15%**: Disintegration & discrete cluster breakdown
+2. **15–42%**: High-voltage multi-pulse polarity flashes (Invert -> Blackout -> Negative jolt -> White clear)
+3. **42–65%**: Particulate dust vibration & pixel chatter
+4. **65–92%**: Blocky coalescence & pigment locking
+5. **92–100%**: Final static freeze (no blur, no glow)
 
-`onComplete` callback fires after the last step — do not add `AnimationController` back here.
+Animation duration is user-configurable from 1.5s to 6.0s (default: 3.5s). Starts strictly after decoding, disposes native `ui.Image` buffers, and safely verifies `mounted`.
 
 ---
 

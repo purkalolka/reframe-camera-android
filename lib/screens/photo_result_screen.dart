@@ -19,17 +19,20 @@ class PhotoResultScreen extends StatelessWidget {
     try {
       final result = await ImageGallerySaverPlus.saveImage(
         imageBytes,
-        name: "reframe_$photoId",
         quality: 100,
+        name: "reframe_$photoId",
       );
 
       if (context.mounted) {
-        bool isSuccess = result != null && (result['isSuccess'] == true || result['filePath'] != null);
+        final bool isSuccess = (result != null && result['isSuccess'] == true);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(isSuccess ? "Photo saved to Gallery!" : "Failed to save photo"),
-            backgroundColor: isSuccess ? const Color(0xFF2E7D32) : Colors.redAccent,
-            duration: const Duration(seconds: 2),
+            content: Text(
+              isSuccess
+                  ? "Saved to gallery (album 'reFrame')"
+                  : "Failed to save photo",
+            ),
+            backgroundColor: isSuccess ? Colors.green.shade800 : Colors.redAccent,
           ),
         );
       }
@@ -46,13 +49,14 @@ class PhotoResultScreen extends StatelessWidget {
   }
 
   Future<void> _sharePhoto(BuildContext context) async {
+    File? tempFile;
     try {
       final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/reframe_$photoId.png');
-      await file.writeAsBytes(imageBytes);
+      tempFile = File('${tempDir.path}/reframe_$photoId.png');
+      await tempFile.writeAsBytes(imageBytes);
 
       await Share.shareXFiles(
-        [XFile(file.path)],
+        [XFile(tempFile.path)],
         text: 'Photo captured with reFrame ePaper camera #reframe',
       );
     } catch (e) {
@@ -60,6 +64,13 @@ class PhotoResultScreen extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Error sharing: $e")),
         );
+      }
+    } finally {
+      // Clean up temporary file to prevent cache bloat
+      if (tempFile != null && await tempFile.exists()) {
+        try {
+          await tempFile.delete();
+        } catch (_) {}
       }
     }
   }
@@ -107,59 +118,48 @@ class PhotoResultScreen extends StatelessWidget {
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withOpacity(0.12),
-                          blurRadius: 18,
+                          blurRadius: 16,
                           offset: const Offset(0, 8),
                         ),
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.06),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
                       ],
-                      border: Border.all(
-                        color: const Color(0xFFD6D6CE),
-                        width: 1.5,
-                      ),
+                      border: Border.all(color: const Color(0xFFE0DDD5), width: 2),
                     ),
-                    padding: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.all(16.0),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        // Spectra 6 Screen Display
                         ClipRRect(
                           borderRadius: BorderRadius.circular(4),
-                          child: InteractiveViewer(
-                            maxScale: 4.0,
-                            child: Image.memory(
-                              imageBytes,
-                              fit: BoxFit.contain,
-                              filterQuality: FilterQuality.none, // Sharp pixels
-                            ),
+                          child: Image.memory(
+                            imageBytes,
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.none, // Preserve crisp dithered pixels
                           ),
                         ),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 12),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             const Text(
-                              "Spectra 6 • 6-Color E-Ink",
+                              "Waveshare Spectra 6",
                               style: TextStyle(
                                 fontFamily: 'monospace',
-                                fontSize: 11,
-                                color: Colors.black54,
-                                letterSpacing: 0.8,
+                                fontSize: 10,
+                                color: Colors.black45,
+                                letterSpacing: 0.5,
                               ),
                             ),
                             Text(
                               "#$photoId",
                               style: const TextStyle(
                                 fontFamily: 'monospace',
-                                fontSize: 11,
-                                color: Colors.black54,
-                                fontWeight: FontWeight.bold,
+                                fontSize: 10,
+                                color: Colors.black45,
                               ),
                             ),
                           ],
-                        )
+                        ),
                       ],
                     ),
                   ),
@@ -167,52 +167,31 @@ class PhotoResultScreen extends StatelessWidget {
               ),
             ),
 
-            // Bottom action panel
+            // Bottom Actions Bar
             Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
               child: Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.black87,
-                        side: const BorderSide(color: Colors.black87, width: 1.5),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.camera_alt_outlined, size: 20),
+                    child: ElevatedButton.icon(
+                      onPressed: () => _saveToGallery(context),
+                      icon: const Icon(Icons.download_rounded, color: Colors.white),
                       label: const Text(
-                        "TAKE NEW",
+                        "SAVE TO GALLERY",
                         style: TextStyle(
                           fontFamily: 'monospace',
                           fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 0.8,
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(30),
                         ),
                         elevation: 0,
-                      ),
-                      onPressed: () => _saveToGallery(context),
-                      icon: const Icon(Icons.file_download_outlined, size: 20),
-                      label: const Text(
-                        "SAVE",
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.bold,
-                        ),
                       ),
                     ),
                   ),

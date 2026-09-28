@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/reframe_processor.dart';
 import '../widgets/epaper_refresh_view.dart';
 import 'photo_result_screen.dart';
@@ -39,6 +41,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   double _colorBoost = 1.3;
   double _contrast = 1.15;
   bool _useFloydSteinberg = true;
+  double _refreshDurationSeconds = 3.5; // Tunable e-paper refresh speed (1.5s - 6.0s)
 
   Uint8List? _rawCapturedBytes;
   Uint8List? _ditheredBytes;
@@ -62,9 +65,44 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadSettings();
     _initAccelerometer();
     if (widget.cameras.isNotEmpty) {
       _initCamera(_selectedCameraIndex);
+    }
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        _densityResolution = prefs.getInt('pref_densityResolution') ?? 700;
+        _contrast = prefs.getDouble('pref_contrast') ?? 1.15;
+        _colorBoost = prefs.getDouble('pref_colorBoost') ?? 1.3;
+        _useFloydSteinberg = prefs.getBool('pref_useFloydSteinberg') ?? true;
+        _refreshDurationSeconds = prefs.getDouble('pref_refreshDuration') ?? 3.5;
+
+        final presetIndex = prefs.getInt('pref_palettePreset');
+        if (presetIndex != null && presetIndex >= 0 && presetIndex < PalettePreset.values.length) {
+          _palettePreset = PalettePreset.values[presetIndex];
+        }
+      });
+    } catch (e) {
+      debugPrint("Error loading preferences: $e");
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('pref_densityResolution', _densityResolution);
+      await prefs.setDouble('pref_contrast', _contrast);
+      await prefs.setDouble('pref_colorBoost', _colorBoost);
+      await prefs.setBool('pref_useFloydSteinberg', _useFloydSteinberg);
+      await prefs.setDouble('pref_refreshDuration', _refreshDurationSeconds);
+      await prefs.setInt('pref_palettePreset', _palettePreset.index);
+    } catch (e) {
+      debugPrint("Error saving preferences: $e");
     }
   }
 
@@ -79,11 +117,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       if (x.abs() > 4.5 || y.abs() > 4.5) {
         if (x.abs() > y.abs()) {
           if (x > 0) {
-            // Tilted left (counter-clockwise) -> rotate icons clockwise (+90 deg)
+            // Tilted left -> rotate icons clockwise (+90 deg)
             newOrientation = DevicePhysicalOrientation.landscapeLeft;
             targetAngle = math.pi / 2;
           } else {
-            // Tilted right (clockwise) -> rotate icons counter-clockwise (-90 deg)
+            // Tilted right -> rotate icons counter-clockwise (-90 deg)
             newOrientation = DevicePhysicalOrientation.landscapeRight;
             targetAngle = -math.pi / 2;
           }
@@ -93,23 +131,30 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             newOrientation = DevicePhysicalOrientation.portraitUp;
             targetAngle = 0.0;
           } else {
-            // Upside down portrait
+            // Upside down
             newOrientation = DevicePhysicalOrientation.portraitDown;
             targetAngle = math.pi;
           }
         }
 
-        if (newOrientation != _deviceOrientation && mounted) {
-          setState(() {
-            _deviceOrientation = newOrientation;
-            _uiRotationAngle = targetAngle;
-          });
+        if (newOrientation != _deviceOrientation || targetAngle != _uiRotationAngle) {
+          if (mounted) {
+            setState(() {
+              _deviceOrientation = newOrientation;
+              _uiRotationAngle = targetAngle;
+            });
+          }
         }
       }
     });
   }
 
   Future<void> _initCamera(int cameraIndex) async {
+    final oldController = _controller;
+    _controller = null;
+    await oldController?.dispose();
+
+    if (widget.cameras.isEmpty) return;
     final camera = widget.cameras[cameraIndex];
     final controller = CameraController(
       camera,
@@ -139,6 +184,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
 
     if (state == AppLifecycleState.inactive) {
+      _controller = null;
       cameraController.dispose();
     } else if (state == AppLifecycleState.resumed) {
       _initCamera(_selectedCameraIndex);
@@ -196,10 +242,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   Future<void> _processImageBytes(Uint8List rawBytes, {bool isFront = false, int rotation = 0}) async {
+    final photoSuffix = DateTime.now().millisecondsSinceEpoch.toString();
     setState(() {
       _isProcessing = true;
       _rawCapturedBytes = rawBytes;
-      _currentPhotoId = DateTime.now().millisecondsSinceEpoch.toString().substring(5);
+      _currentPhotoId = photoSuffix.length > 6 ? photoSuffix.substring(photoSuffix.length - 6) : photoSuffix;
     });
 
     try {
@@ -229,24 +276,22 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           _isProcessing = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Processing failed: $e")),
+          SnackBar(content: Text("Error processing photo: $e")),
         );
       }
     }
   }
 
   int _calculateCaptureRotation() {
-    // Correct physical sensor rotation for upright ePaper output
     switch (_deviceOrientation) {
+      case DevicePhysicalOrientation.portraitUp:
+        return 0;
       case DevicePhysicalOrientation.landscapeLeft:
         return 270;
       case DevicePhysicalOrientation.landscapeRight:
         return 90;
       case DevicePhysicalOrientation.portraitDown:
         return 180;
-      case DevicePhysicalOrientation.portraitUp:
-      default:
-        return 0;
     }
   }
 
@@ -265,6 +310,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       await _processImageBytes(bytes, isFront: wasFront, rotation: rotation);
     } catch (e) {
       debugPrint("Take photo error: $e");
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Camera capture error: $e")),
+        );
+      }
     }
   }
 
@@ -278,6 +331,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       }
     } catch (e) {
       debugPrint("Gallery pick error: $e");
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Gallery pick error: $e")),
+        );
+      }
     }
   }
 
@@ -286,7 +347,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       _isRefreshingEpaper = false;
     });
 
-    if (_ditheredBytes != null) {
+    if (_ditheredBytes != null && mounted) {
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (context) => PhotoResultScreen(
@@ -301,6 +362,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   void _showSettingsModal() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -357,6 +419,34 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     ),
                     const SizedBox(height: 16),
 
+                    // Refresh Animation Speed / Duration Slider
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          "REFRESH DURATION",
+                          style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.white70),
+                        ),
+                        Text(
+                          "${_refreshDurationSeconds.toStringAsFixed(1)}s",
+                          style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.yellowAccent),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      value: _refreshDurationSeconds,
+                      min: 1.5,
+                      max: 6.0,
+                      divisions: 9,
+                      activeColor: Colors.yellowAccent,
+                      inactiveColor: Colors.white24,
+                      onChanged: (val) {
+                        setModalState(() => _refreshDurationSeconds = val);
+                        setState(() => _refreshDurationSeconds = val);
+                      },
+                      onChangeEnd: (_) => _saveSettings(),
+                    ),
+
                     // Density / Graininess Slider
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -382,6 +472,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                         setModalState(() => _densityResolution = val.toInt());
                         setState(() => _densityResolution = val.toInt());
                       },
+                      onChangeEnd: (_) => _saveSettings(),
                     ),
 
                     // Contrast Slider
@@ -408,6 +499,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                         setModalState(() => _contrast = val);
                         setState(() => _contrast = val);
                       },
+                      onChangeEnd: (_) => _saveSettings(),
                     ),
 
                     // Color Saturation Slider
@@ -434,6 +526,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                         setModalState(() => _colorBoost = val);
                         setState(() => _colorBoost = val);
                       },
+                      onChangeEnd: (_) => _saveSettings(),
                     ),
                     const SizedBox(height: 12),
                   ],
@@ -447,76 +540,40 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   String _getDensityLabel(int val) {
-    if (val <= 450) return "Lo-Fi Chunky (${val}p)";
-    if (val <= 650) return "Medium Grain (${val}p)";
-    if (val <= 850) return "Dense / Sharp (${val}p)";
-    return "Ultra-Fine (${val}p)";
+    if (val <= 360) return "360p (Coarse)";
+    if (val <= 540) return "540p (Medium)";
+    if (val <= 720) return "720p (Default)";
+    if (val <= 900) return "900p (Fine)";
+    return "1080p (Ultra)";
   }
 
-  Widget _buildPresetChip(String title, PalettePreset preset, StateSetter setModalState) {
-    final isSelected = _palettePreset == preset;
+  Widget _buildPresetChip(String label, PalettePreset preset, StateSetter setModalState) {
+    final bool isSelected = _palettePreset == preset;
     return ChoiceChip(
-      label: Text(
-        title,
-        style: TextStyle(
-          color: isSelected ? Colors.black : Colors.white70,
-          fontFamily: 'monospace',
-          fontSize: 11,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-        ),
-      ),
+      label: Text(label),
       selected: isSelected,
-      selectedColor: Colors.yellowAccent,
-      backgroundColor: Colors.white10,
-      onSelected: (selected) {
-        if (selected) {
+      selectedColor: Colors.white,
+      backgroundColor: Colors.black45,
+      labelStyle: TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 11,
+        color: isSelected ? Colors.black : Colors.white,
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+      ),
+      onSelected: (val) {
+        if (val) {
           setModalState(() => _palettePreset = preset);
           setState(() => _palettePreset = preset);
+          _saveSettings();
         }
       },
     );
   }
 
-  Widget _buildViewfinder() {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return const Center(child: CircularProgressIndicator(color: Colors.white70));
-    }
-
-    final sensorRatio = _controller!.value.aspectRatio;
-    final previewRatio = 1.0 / sensorRatio;
-
-    Widget previewWidget = AspectRatio(
-      aspectRatio: previewRatio,
-      child: CameraPreview(_controller!),
-    );
-
-    if (_isCurrentFrontCamera) {
-      previewWidget = Transform(
-        alignment: Alignment.center,
-        transform: Matrix4.rotationY(math.pi),
-        child: previewWidget,
-      );
-    }
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            color: Colors.black,
-            child: previewWidget,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Helper widget to smoothly rotate icons based on physical phone orientation
   Widget _buildRotatedButton({required Widget child}) {
     return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.0, end: _uiRotationAngle),
-      duration: const Duration(milliseconds: 300),
+      tween: Tween<double>(end: _uiRotationAngle),
+      duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
       builder: (context, angle, childWidget) {
         return Transform.rotate(
@@ -528,6 +585,31 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     );
   }
 
+  Widget _buildViewfinder() {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+
+    final size = MediaQuery.of(context).size;
+    final deviceRatio = size.width / size.height;
+    final cameraRatio = 1.0 / _controller!.value.aspectRatio;
+
+    return Center(
+      child: AspectRatio(
+        aspectRatio: cameraRatio,
+        child: _isCurrentFrontCamera
+            ? Transform(
+                alignment: Alignment.center,
+                transform: Matrix4.rotationY(math.pi),
+                child: CameraPreview(_controller!),
+              )
+            : CameraPreview(_controller!),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isRefreshingEpaper && _rawCapturedBytes != null && _ditheredBytes != null) {
@@ -536,6 +618,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         body: EpaperRefreshView(
           rawImageBytes: _rawCapturedBytes!,
           ditheredImageBytes: _ditheredBytes!,
+          duration: Duration(milliseconds: (_refreshDurationSeconds * 1000).toInt()),
           onComplete: _onEpaperRefreshComplete,
         ),
       );
@@ -568,14 +651,16 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     child: Text(
                       "reFrame // ${_palettePreset.name.toUpperCase()}",
                       style: const TextStyle(
-                        color: Colors.white,
                         fontFamily: 'monospace',
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        letterSpacing: 1.0,
                       ),
                     ),
                   ),
 
+                  // Dithering Mode Toggle + Flash Button
                   Row(
                     children: [
                       _buildRotatedButton(
@@ -584,54 +669,41 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                             setState(() {
                               _useFloydSteinberg = !_useFloydSteinberg;
                             });
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  _useFloydSteinberg
-                                      ? "Algorithm: Floyd-Steinberg"
-                                      : "Algorithm: Bayer 4x4",
-                                ),
-                                duration: const Duration(seconds: 1),
-                              ),
-                            );
+                            _saveSettings();
                           },
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.6),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white24),
+                              color: _useFloydSteinberg
+                                  ? Colors.yellowAccent.withOpacity(0.9)
+                                  : Colors.white.withOpacity(0.8),
+                              borderRadius: BorderRadius.circular(16),
                             ),
                             child: Text(
                               _useFloydSteinberg ? "FLOYD" : "BAYER",
                               style: const TextStyle(
-                                color: Colors.yellowAccent,
                                 fontFamily: 'monospace',
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
+                                color: Colors.black,
                               ),
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 8),
 
                       _buildRotatedButton(
                         child: IconButton(
                           icon: Icon(
                             _flashMode == FlashMode.off
                                 ? Icons.flash_off
-                                : (_flashMode == FlashMode.auto ? Icons.flash_auto : Icons.flash_on),
+                                : _flashMode == FlashMode.auto
+                                    ? Icons.flash_auto
+                                    : Icons.flash_on,
                             color: Colors.white,
                           ),
                           onPressed: _cycleFlash,
-                        ),
-                      ),
-
-                      _buildRotatedButton(
-                        child: IconButton(
-                          icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
-                          onPressed: _switchCamera,
                         ),
                       ),
                     ],
@@ -640,94 +712,80 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               ),
             ),
 
-            // Processing overlay indicator
-            if (_isProcessing)
-              Container(
-                color: Colors.black.withOpacity(0.7),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: const [
-                      CircularProgressIndicator(color: Colors.white),
-                      SizedBox(height: 16),
-                      Text(
-                        "DITHERING EPAPER PARTICLES...",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          letterSpacing: 1.5,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // Bottom control bar
+            // Shutter & Bottom Controls
             Positioned(
               bottom: 24,
               left: 0,
               right: 0,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildRotatedButton(
-                    child: IconButton(
-                      iconSize: 32,
-                      icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
-                      tooltip: "Pick from gallery",
-                      onPressed: _pickFromGallery,
-                    ),
-                  ),
-
-                  // Large tactile shutter button
-                  GestureDetector(
-                    onTap: _takePhoto,
-                    child: Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: const Color(0xFFF0EFEB),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.8),
-                          width: 4,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.4),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    // Import photo from gallery
+                    _buildRotatedButton(
+                      child: IconButton(
+                        iconSize: 32,
+                        icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
+                        tooltip: "Process from Gallery",
+                        onPressed: _isProcessing ? null : _pickFromGallery,
                       ),
-                      child: Center(
-                        child: Container(
-                          width: 60,
-                          height: 60,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFFE5E5DF),
-                            border: Border.all(
-                              color: const Color(0xFF222222),
-                              width: 1.5,
+                    ),
+
+                    // Shutter button
+                    GestureDetector(
+                      onTap: _isProcessing ? null : _takePhoto,
+                      child: Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 4),
+                          color: Colors.transparent,
+                        ),
+                        child: Center(
+                          child: Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _isProcessing ? Colors.yellowAccent : Colors.white,
                             ),
+                            child: _isProcessing
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12.0),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 3,
+                                      color: Colors.black,
+                                    ),
+                                  )
+                                : null,
                           ),
                         ),
                       ),
                     ),
-                  ),
 
-                  _buildRotatedButton(
-                    child: IconButton(
-                      iconSize: 30,
-                      icon: const Icon(Icons.settings_outlined, color: Colors.white),
-                      tooltip: "Tune density & colors",
-                      onPressed: _showSettingsModal,
+                    // Switch Camera
+                    _buildRotatedButton(
+                      child: IconButton(
+                        iconSize: 32,
+                        icon: const Icon(Icons.cameraswitch_outlined, color: Colors.white),
+                        tooltip: "Switch Camera",
+                        onPressed: _isProcessing ? null : _switchCamera,
+                      ),
                     ),
-                  ),
-                ],
+
+                    // Settings modal bottom sheet
+                    _buildRotatedButton(
+                      child: IconButton(
+                        iconSize: 30,
+                        icon: const Icon(Icons.settings_outlined, color: Colors.white),
+                        tooltip: "Tune density & colors",
+                        onPressed: _showSettingsModal,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
